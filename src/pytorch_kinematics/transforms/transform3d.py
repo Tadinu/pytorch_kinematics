@@ -254,7 +254,7 @@ class Transform3d:
         """
         return self._matrix
 
-    def _get_matrix_inverse(self):
+    def _old_get_matrix_inverse(self):
         """
         Return the inverse of self._matrix.
         """
@@ -265,6 +265,25 @@ class Transform3d:
     def _invert_transformation_matrix(T):
         """
         Invert homogeneous transformation matrix.
+        """
+        Tinv = T.clone()
+        R = T[:, :3, :3]
+        t = T[:, :3, 3]
+        Tinv[:, :3, :3] = R.transpose(1, 2)
+        Tinv[:, :3, 3:] = -Tinv[:, :3, :3] @ t.unsqueeze(-1)
+        return Tinv
+
+    def _get_matrix_inverse(self):
+        """
+        Return the inverse of self._matrix.
+        """
+
+        return self._invert_transformation_matrix(self._matrix)
+
+    @staticmethod
+    def _invert_transformation_matrix(T):
+        """
+        Inverts homogeneous transformation matrix
         """
         Tinv = T.clone()
         R = T[:, :3, :3]
@@ -382,6 +401,31 @@ class Transform3d:
             normals_out = normals_out.reshape(normals.shape)
 
         return normals_out
+
+    def transform_shape_operator(self, shape_operators):
+        """
+        Use this transform to transform a set of shape_operator (or Weingarten map).
+        This is the hessian of a signed-distance, i.e. gradient of a normal vector.
+
+        Args:
+            shape_operators: Tensor of shape (P, 3, 3) or (N, P, 3, 3)
+
+        Returns:
+            shape_operators_out: Tensor of shape (P, 3, 3) or (N, P, 3, 3) depending
+            on the dimensions of the transform
+        """
+        if shape_operators.dim() not in [3, 4]:
+            msg = "Expected shape_operators to have dim = 3 or dim = 4: got shape %r"
+            raise ValueError(msg % (shape_operators.shape,))
+        mat = self.inverse().get_matrix()[:, :3, :3]
+        shape_operators_out = _broadcast_bmm(mat.permute(0, 2, 1), _broadcast_bmm(shape_operators, mat))
+
+        # When transform is (1, 4, 4) and shape_operator is (P, 3, 3) return
+        # shape_operators_out of shape (P, 3, 3)
+        if shape_operators_out.shape[0] == 1 and shape_operators.dim() == 3:
+            shape_operators_out = shape_operators_out.reshape(shape_operators.shape)
+
+        return shape_operators_out
 
     def transform_shape_operator(self, shape_operators):
         """

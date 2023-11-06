@@ -140,7 +140,12 @@ class Chain:
         self.joint_type_indices = torch.tensor(self.joint_type_indices)
         self.joint_indices = torch.tensor(self.joint_indices)
         # We need to use a dict because torch.compile doesn't list lists of tensors
-        self.parents_indices = [torch.tensor(p, dtype=torch.long, device=self.device) for p in self.parents_indices]
+        # pad parent indices with -1 so they are all the same length
+        max_len = max([len(p) for p in self.parents_indices])
+        self.parents_indices = [torch.tensor(p + [-1] * (max_len - len(p)),
+                                             dtype=torch.long, device=self.device) for p in self.parents_indices]
+        self.parents_indices = torch.stack(self.parents_indices, dim=0)  # will be num_frames x max tree depth
+        self.max_kinematic_tree_depth = self.parents_indices.shape[1]
 
         # Precomputed structures for torch.compile-compatible FK kernel
         self._num_frames = idx
@@ -177,7 +182,7 @@ class Chain:
         self._root = self._root.to(dtype=self.dtype, device=self.device)
 
         self.identity = self.identity.to(device=self.device, dtype=self.dtype)
-        self.parents_indices = [p.to(dtype=torch.long, device=self.device) for p in self.parents_indices]
+        self.parents_indices = self.parents_indices.to(dtype=torch.long, device=self.device)
         self.joint_type_indices = self.joint_type_indices.to(dtype=torch.long, device=self.device)
         self.joint_indices = self.joint_indices.to(dtype=torch.long, device=self.device)
         self.axes = self.axes.to(dtype=self.dtype, device=self.device)
@@ -409,6 +414,10 @@ class Chain:
         th = torch.atleast_2d(th)
 
         all_transforms = self.forward_kinematics_tensor(th)
+                if chain_idx.item() == -1:
+                    break
+
+
 
         return {self.idx_to_frame[fi.item()]: tf.Transform3d(matrix=all_transforms[fi])
                 for fi in frame_indices}
@@ -496,6 +505,155 @@ class Chain:
     def get_joints_and_child_links(self):
         yield from Chain._get_joints_and_child_links(self._root)
 
+    def jacobian(self, th, locations=None, link_indices=None):
+        if link_indices is None:
+            msg = "Cannot compute Jacobian for non-serial chain unless frame_indices are specified." \
+                  " The Jacobian is can be defined for any links, but we need to know which links you want."
+            raise ValueError(msg)
+        if locations is not None:
+            locations = tf.Transform3d(pos=locations, device=self.device)
+
+        return self.calc_jacobian(th, tool=locations, link_indices=link_indices)
+
+    def jacobian_and_hessian(self, th, locations=None, link_indices=None):
+        if link_indices is None:
+            msg = "Cannot compute Jacobian for non-serial chain unless frame_indices are specified." \
+                  " The Jacobian is can be defined for any links, but we need to know which links you want."
+            raise ValueError(msg)
+        if locations is not None:
+            locations = tf.Transform3d(pos=locations, device=self.device)
+
+        return self.calc_jacobian_and_hessian(th, tool=locations, link_indices=link_indices)
+
+    def calc_jacobian(self, th, tool=None, link_indices=None):
+        """
+        Return robot Jacobian J in base frame (N,6,DOF) where dot{x} = J dot{q}
+        The first 3 rows relate the translational velocities and the
+        last 3 rows relate the angular velocities.
+
+        tool is the transformation wrt the end effector; default is identity. If specified, will have to
+        specify for each of the N inputs
+
+        FIXME: this code assumes the joint frame and the child link frame are the same
+        """
+        if not torch.is_tensor(th):
+            th = torch.tensor(th, dtype=self.dtype, device=self.device)
+        if len(th.shape) <= 1:
+            N = 1
+            th = th.reshape(1, -1)
+        else:
+            N = th.shape[0]
+        ndof = th.shape[1]
+        N_range = torch.arange(0, N).to(dtype=torch.long, device=self.device)
+
+        if tool is None:
+            cur_transform = tf.Transform3d(device=self.device,
+                                           dtype=self.dtype).get_matrix().repeat(N, 1, 1)
+        else:
+            if tool.dtype != self.dtype or tool.device != self.device:
+                tool = tool.to(device=self.device, copy=True, dtype=self.dtype)
+            cur_transform = tool.get_matrix()
+
+        if isinstance(self, SerialChain):
+            fk_dict = self.forward_kinematics(th, end_only=False)
+        else:
+            fk_dict = self.forward_kinematics(th)
+
+        # assemble transforms into a single multi-batch tensor
+        T = torch.stack([transform.get_matrix() for transform in fk_dict.values()], dim=0)  # num_links x N x 4 x 4
+
+        # retrieve desired link-transform
+        ee_transform = T[link_indices, N_range] @ cur_transform
+        tool_world = ee_transform[:, :3, 3]
+
+        # compute jacobian in world frame
+        jacobian = torch.zeros((N, 6, ndof), dtype=self.dtype, device=self.device)
+
+        # may need different cnt per link
+        cnt = torch.zeros(N, dtype=torch.long, device=self.device)
+        for d in range(self.max_kinematic_tree_depth):
+            # Retrieve frame information
+            frame_idx = self.parents_indices[link_indices, d]
+            joint_idx = self.joint_indices[frame_idx]
+            transform = T[frame_idx, N_range]
+            joint_axes = self.axes[joint_idx].expand(N, 3).unsqueeze(-1)
+            joint_type = self.joint_type_indices[frame_idx].unsqueeze(-1)
+
+            # only do this if some joints are non-fixed
+            if torch.any(joint_type != Joint.TYPES.index('fixed')):
+                # compute jacobian as if revolute joint
+                joint_axes_world = (transform[:, :3, :3] @ joint_axes).squeeze(-1)
+                position_jacobian = torch.cross(joint_axes_world, tool_world - transform[:, :3, 3], dim=-1)
+                jac_column_revolute = torch.cat((position_jacobian, joint_axes_world), dim=-1)
+
+                # compute jacobian as if prismatic joint
+                jacobian_column_prismatic = torch.cat((joint_axes_world, torch.zeros_like(joint_axes_world)), dim=-1)
+
+                # Replace jacobian column with correct type
+                default_jacobian = jacobian[N_range, :, cnt]
+                jacobian_col = torch.where(joint_type == Joint.TYPES.index('revolute'),
+                                           jac_column_revolute,
+                                           default_jacobian
+                                           )
+                jacobian_col = torch.where(joint_type == Joint.TYPES.index('prismatic'),
+                                           jacobian_column_prismatic,
+                                           jacobian_col
+                                           )
+
+                # update jacobian but only if we are not at the desired frame_idx
+                jacobian[N_range, :, cnt] = torch.where(frame_idx.unsqueeze(-1) > -1, jacobian_col, default_jacobian)
+
+                # increment counter for non-fixed joints
+                cnt = torch.where(joint_type != Joint.TYPES.index('fixed'), cnt + 1, cnt)
+
+            # break if have calculated for all desired links
+            if torch.all(frame_idx < 0):
+                break
+
+        return jacobian
+
+    def calc_jacobian_and_hessian(self, th, tool=None, link_indices=None):
+        """
+            Calculates robot jacobian and kinematic hessian in the base frame
+
+            Returns:
+                J: torch.tensor of shape (N, 6, DOF) representing robot jacobian
+                H: torch.tensor of shape (N, 6, DOF, DOF) - kinematic Hessian. The kinematic hessian is the partial
+                   derivative of the robot jacobian
+
+        """
+        if not torch.is_tensor(th):
+            th = torch.tensor(th, dtype=self.dtype, device=self.device)
+        if len(th.shape) <= 1:
+            N = 1
+            th = th.view(1, -1)
+        else:
+            N = th.shape[0]
+        ndof = th.shape[1]
+
+        J = self.calc_jacobian(th, tool, link_indices)
+
+        H = torch.zeros(N, 6, ndof, ndof, device=self.device, dtype=self.dtype)
+        # TODO can this be vectorized?
+        for j in range(ndof):
+            for i in range(j, ndof):
+                H[:, :3, i, j] = torch.cross(J[:, 3:, j], J[:, :3, i])
+                H[:, 3:, i, j] = torch.cross(J[:, 3:, j], J[:, 3:, i])
+                if i != j:
+                    H[:, :3, j, i] = H[:, :3, i, j]
+        return J, H
+
+    @staticmethod
+    def _generate_serial_chain_recurse(root_frame, end_frame_name):
+        for child in root_frame.children:
+            if child.name == end_frame_name:
+                return [child]
+            else:
+                frames = Chain._generate_serial_chain_recurse(child, end_frame_name)
+                if not frames is None:
+                    return [child] + frames
+        return None
+
 
 class SerialChain(Chain):
     """
@@ -508,11 +666,11 @@ class SerialChain(Chain):
         if root_frame is None:
             raise ValueError("Invalid root frame name %s." % root_frame_name)
         chain = Chain(root_frame, **kwargs)
+        # self.convert_serial_inputs_to_chain_inputs = torch.vmap(self._convert_serial_inputs_to_chain_inputs, in_dims=(None, 1))
 
         # make a copy of those frames that includes only the chain up to the end effector
         end_frame_idx = chain.get_frame_indices(end_frame_name)
         ancestors = chain.parents_indices[end_frame_idx]
-
         frames = []
         # first pass create copies of the ancestor nodes
         for idx in ancestors:
@@ -684,6 +842,7 @@ class SerialChain(Chain):
         if isinstance(th, list):
             th = torch.tensor(th, device=self.device, dtype=self.dtype)
 
+        th_size = get_th_size(th)
         if end_only:
             frame_indices = self.get_frame_indices(self._serial_frames[-1].name)
         else:
