@@ -862,6 +862,7 @@ class SerialChain(Chain):
             th = torch.tensor(th, device=self.device, dtype=self.dtype)
 
         th_size = get_th_size(th)
+        joint_indices = []
         if end_only:
             frame_indices = self.get_frame_indices(self._serial_frames[-1].name)
         else:
@@ -885,4 +886,7 @@ class SerialChain(Chain):
                 jnt_idx = self.joint_indices[k]
                 if frame.joint.joint_type != 'fixed':
                     th[..., jnt_idx] = partial_th_i
-        return frame_indices, th
+                joint_indices.append(jnt_idx)
+        else:
+            joint_indices = range(self.n_joints)
+        return frame_indices, th, joint_indices
