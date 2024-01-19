@@ -64,7 +64,8 @@ def _build_chain_recurse(root_frame, lmap, joints):
                                             velocity_limits=velocity_limits, effort_limits=effort_limits)
             link = lmap[j.child]
             child_frame.link = frame.Link(link.name, offset=_convert_transform(link.origin),
-                                          visuals=[_convert_visual(link.visual)])
+                                          visuals=[_convert_visual(link.visual)],
+                                          collisions=[_convert_visual(link.collision)])
             child_frame.children = _build_chain_recurse(child_frame, lmap, joints)
             children.append(child_frame)
     return children
