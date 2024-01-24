@@ -583,7 +583,6 @@ class Chain:
         # retrieve desired link-transform
         ee_transform = T[link_indices, N_range] @ cur_transform
         tool_world = ee_transform[:, :3, 3]
-
         # compute jacobian in world frame
         jacobian = torch.zeros((N, 6, ndof), dtype=self.dtype, device=self.device)
         # TODO exclude fixed joints? saves for loop time
@@ -592,6 +591,9 @@ class Chain:
         for d in range(self.max_kinematic_tree_depth):
             # Retrieve frame information
             frame_idx = self.non_fixed_parents_indices[link_indices, d]
+            # break if have calculated for all desired links
+            if torch.all(frame_idx < 0):
+                break
             transform = T[frame_idx, N_range]
             joint_idx = self.joint_indices[frame_idx]
             joint_axes = self.axes[joint_idx].expand(N, 3).unsqueeze(-1)
@@ -625,9 +627,7 @@ class Chain:
                                                           jacobian_col,
                                                           old_jacobian_col)
 
-            # break if have calculated for all desired links
-            if torch.all(frame_idx < 0):
-                break
+
 
         return jacobian
 
@@ -685,7 +685,6 @@ class SerialChain(Chain):
         if root_frame is None:
             raise ValueError("Invalid root frame name %s." % root_frame_name)
         chain = Chain(root_frame, **kwargs)
-        # self.convert_serial_inputs_to_chain_inputs = torch.vmap(self._convert_serial_inputs_to_chain_inputs, in_dims=(None, 1))
 
         # make a copy of those frames that includes only the chain up to the end effector
         end_frame_idx = chain.get_frame_indices(end_frame_name)
