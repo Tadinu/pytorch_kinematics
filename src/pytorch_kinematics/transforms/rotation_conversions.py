@@ -106,8 +106,9 @@ def matrix_to_quaternion(matrix):
         matrix: Rotation matrices as tensor of shape (..., 3, 3).
 
     Returns:
-        quaternions with real part first, as tensor of shape (..., 4). as w,x,y,z
+        quaternions with real part first, as tensor of shape (..., 4).
     """
+
     if matrix.size(-1) != 3 or matrix.size(-2) != 3:
         raise ValueError(f"Invalid rotation matrix shape {matrix.shape}.")
 
