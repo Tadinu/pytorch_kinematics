@@ -389,7 +389,7 @@ class Chain:
 
         return buffer
 
-    def forward_kinematics(self, th, frame_indices: Optional = None):
+    def forward_kinematics(self, th, frame_indices: Optional = None, exclude_fixed: bool = False):
         """
         Compute forward kinematics for the given joint values.
 
@@ -397,13 +397,14 @@ class Chain:
             th: A dict, list, numpy array, or torch tensor of joints values. Possibly batched.
             frame_indices: A list of frame indices to compute transforms for. If None, all frames are computed.
                 Use `get_frame_indices` to convert from frame names to frame indices.
+            exclude_fixed: If True, fixed joints are excluded from the computation.
 
         Returns:
             A dict of Transform3d objects for each frame.
 
         """
         if frame_indices is None:
-            frame_indices = self.get_all_frame_indices()
+            frame_indices = self.get_all_frame_indices(exclude_fixed)
 
         th = self.ensure_tensor(th)
         th = torch.atleast_2d(th)
@@ -438,8 +439,8 @@ class Chain:
                 raise ValueError(msg)
         return th
 
-    def get_all_frame_indices(self):
-        frame_indices = self.get_frame_indices(*self.get_frame_names(exclude_fixed=False))
+    def get_all_frame_indices(self, exclude_fixed: bool = False):
+        frame_indices = self.get_frame_indices(*self.get_frame_names(exclude_fixed=exclude_fixed))
         return frame_indices
 
     def clamp(self, th):
@@ -582,7 +583,7 @@ class SerialChain(Chain):
         # DOF frame transforms
         T_dof = all_transforms[self._serial_dof_frame_indices]  # (ndof, B, 4, 4)
         R_dof = T_dof[:, :, :3, :3]  # (ndof, B, 3, 3)
-        p_dof = T_dof[:, :, :3, 3]   # (ndof, B, 3)
+        p_dof = T_dof[:, :, :3, 3]  # (ndof, B, 3)
 
         # Joint axes in base frame: z_i = R_i @ axis_i
         axes = self._serial_dof_axes  # (ndof, 3)

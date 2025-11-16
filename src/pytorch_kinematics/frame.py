@@ -1,3 +1,4 @@
+from __future__ import annotations
 import torch
 
 import pytorch_kinematics.transforms as tf
@@ -7,7 +8,8 @@ from pytorch_kinematics.transforms import axis_and_angle_to_matrix_33
 class Visual(object):
     TYPES = ['box', 'cylinder', 'sphere', 'capsule', 'mesh']
 
-    def __init__(self, offset=None, geom_type=None, geom_param=None):
+    def __init__(self, name=None, offset=None, geom_type=None, geom_param=None):
+        self.name = name if name else ""
         if offset is None:
             self.offset = None
         else:
@@ -16,19 +18,18 @@ class Visual(object):
         self.geom_param = geom_param
 
     def __repr__(self):
-        return "Visual(offset={0}, geom_type='{1}', geom_param={2})".format(self.offset,
-                                                                            self.geom_type,
-                                                                            self.geom_param)
+        return "Visual(name='{0}', offset={1}, geom_type='{2}', geom_param={3})".format(self.name,
+                                                                                        self.offset,
+                                                                                        self.geom_type,
+                                                                                        self.geom_param)
 
 
 class Link(object):
-    def __init__(self, name=None, offset=None, visuals=()):
-        if offset is None:
-            self.offset = None
-        else:
-            self.offset = offset
+    def __init__(self, name=None, offset=None, visuals: list[Visual] = None, collisions: list[Visual] = None):
+        self.offset = offset
         self.name = name
         self.visuals = visuals
+        self.collisions = collisions
 
     def to(self, *args, **kwargs):
         if self.offset is not None:
@@ -36,9 +37,10 @@ class Link(object):
         return self
 
     def __repr__(self):
-        return "Link(name='{0}', offset={1}, visuals={2})".format(self.name,
-                                                                  self.offset,
-                                                                  self.visuals)
+        return "Link(name='{0}', offset={1}, visuals={2}, collisions={3})".format(self.name,
+                                                                                  self.offset,
+                                                                                  self.visuals,
+                                                                                  self.collisions)
 
 
 class Joint(object):
@@ -89,11 +91,12 @@ class Joint(object):
 
 
 # prefix components:
-space =  '    '
+space = '    '
 branch = '│   '
 # pointers:
-tee =    '├── '
-last =   '└── '
+tee = '├── '
+last = '└── '
+
 
 class Frame(object):
     def __init__(self, name=None, link=None, joint=None, children=None):

@@ -38,7 +38,7 @@ def _convert_visual(visual):
         else:
             g_type = None
             g_param = None
-        return frame.Visual(v_tf, g_type, g_param)
+        return frame.Visual(offset=v_tf, geom_type=g_type, geom_param=g_param)
 
 
 def _build_chain_recurse(root_frame, lmap, joints):
