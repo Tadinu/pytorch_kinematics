@@ -55,8 +55,9 @@ class Chain:
     having a physical link and a number of child frames each connected via some joint.
     """
 
-    def __init__(self, root_frame, dtype=torch.float32, device="cpu"):
+    def __init__(self, root_frame, is_from_mjcf: bool = False, dtype=torch.float32, device="cpu"):
         self._root = root_frame
+        self.is_from_mjcf = is_from_mjcf
         self.dtype = dtype
         self.device = device
 
@@ -116,7 +117,7 @@ class Chain:
                         self.link_com_offsets.append(root.link.offset.get_matrix()[0, :3, 3])
                     else:
                         self.link_com_offsets.append(
-                        (root.link.offset.get_matrix() @ root.link.inertial.offset.get_matrix())[0, :3, 3])
+                            (root.link.offset.get_matrix() @ root.link.inertial.offset.get_matrix())[0, :3, 3])
 
                 self.link_masses.append(root.link.inertial.mass)
 
